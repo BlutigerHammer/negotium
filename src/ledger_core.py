@@ -367,7 +367,8 @@ def compute_twr(
     # External flows: deposits/withdrawals only, merged per date.
     # Deposits are positive (money entering the portfolio).
     flows: dict[str, float] = {}
-    for rec in get_all_transactions():
+    records = get_all_transactions()
+    for rec in records:
         if end and rec["date"] > end:
             continue
         for e in rec["entries"]:
@@ -377,6 +378,12 @@ def compute_twr(
             amt = float(e["amount"])
             fx = get_fx_rate(t, base_ccy, rec["date"], fx_cache, int(rec["date"][:4])) if t != base_ccy else 1.0
             flows[rec["date"]] = flows.get(rec["date"], 0.0) + amt * fx
+
+    for purchase_date, amount_pln in _manual_bond_flows(records, end):
+        purchase_year = int(purchase_date[:4])
+        fx = get_fx_rate("PLN", base_ccy, purchase_date, fx_cache, purchase_year) \
+            if base_ccy != "PLN" else 1.0
+        flows[purchase_date] = flows.get(purchase_date, 0.0) + amount_pln * fx
 
     cum = 1.0
     chained_days = 0
@@ -444,6 +451,12 @@ def compute_irr(current_value: float, base_currency: str | None = None, fx_cache
             # Negate: positive account_op = deposit (money out of pocket)
             cash_flows.append((rec["date"], -amt * fx))
 
+    for purchase_date, amount_pln in _manual_bond_flows(records, end):
+        purchase_year = int(purchase_date[:4])
+        fx = get_fx_rate("PLN", base_ccy, purchase_date, fx_cache, purchase_year) \
+            if base_ccy != "PLN" else 1.0
+        cash_flows.append((purchase_date, -amount_pln * fx))
+
     if not cash_flows:
         return None
 
@@ -496,16 +509,50 @@ def compute_irr(current_value: float, base_currency: str | None = None, fx_cache
     return (lo + hi) / 2.0
 
 
+def _manual_bond_flows(records: list[dict], end: str | None = None) -> list[tuple[str, float]]:
+    """Return manual bond contributions not already represented by ledger units."""
+    from bonds import bond_purchase_date, is_retail_bond, load_bond_definition
+
+    flows = []
+    for holding in storage.load_bond_holdings():
+        try:
+            ticker = str(holding["ticker"]).upper().strip()
+            if not is_retail_bond(ticker):
+                continue
+            definition = load_bond_definition(ticker)
+            purchase = bond_purchase_date(holding, definition)
+            purchase_date = purchase.isoformat()
+            amount = float(holding["units"]) * 100.0
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+        if end and purchase_date > end:
+            continue
+
+        ledger_units = sum(
+            float(entry["amount"])
+            for record in records
+            if record["date"] <= purchase_date
+            for entry in record["entries"]
+            if entry["ticker"].upper() == ticker
+        )
+        if abs(ledger_units) > 1e-9:
+            continue
+        flows.append((purchase_date, amount))
+    return flows
+
+
 def get_all_transactions() -> list[dict]:
-    """Return all transactions, chronologically (cached per file mtime).
+    """Return all transactions, chronologically (cached per project ledger).
 
     Thread-safe: concurrent readers and writers are serialised so a
     reader never sees a half-cleared cache.
     """
-    import os
     path = storage.transactions_path()
-    mtime = os.path.getmtime(path) if path.exists() else 0.0
-    cache_key = ("_tx_cache", mtime)
+    try:
+        stat = path.stat()
+        cache_key = ("_tx_cache", str(path.resolve()), stat.st_mtime_ns, stat.st_size)
+    except FileNotFoundError:
+        cache_key = ("_tx_cache", str(path.resolve()), 0, 0)
     with _tx_cache_lock:
         if cache_key not in get_all_transactions._cache:
             get_all_transactions._cache.clear()
@@ -526,6 +573,27 @@ def first_transaction_date() -> date | None:
     if not txs:
         return None
     return date.fromisoformat(min(r["date"] for r in txs))
+
+
+def first_portfolio_date() -> date | None:
+    """Return the earliest ledger or manually held retail-bond purchase date."""
+    dates = []
+    first_tx = first_transaction_date()
+    if first_tx is not None:
+        dates.append(first_tx)
+
+    from bonds import bond_purchase_date, is_retail_bond, load_bond_definition
+    for holding in storage.load_bond_holdings():
+        try:
+            ticker = str(holding.get("ticker", "")).upper().strip()
+            if not is_retail_bond(ticker):
+                continue
+            definition = load_bond_definition(ticker)
+            dates.append(bond_purchase_date(holding, definition))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            continue
+
+    return min(dates) if dates else None
 
 
 def get_transactions_up_to(as_of: str) -> list[dict]:

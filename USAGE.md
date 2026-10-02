@@ -51,6 +51,26 @@ Rules worth knowing:
   and FX swaps credit cash without raising invested, so they read as
   performance. Stock buys/sells never count.
 
+### Polish retail Treasury bonds
+
+Open **Retail bonds** in the sidebar and enter the issue ticker, maturity date
+and number of bonds. The same data is stored in the current project's
+`data/<project>/bond_holdings.json`, for example:
+
+```json
+[
+  {"ticker": "TOS0827", "maturity_date": "2027-08-30", "units": 50},
+  {"ticker": "EDO1233", "maturity_date": "2033-12-13", "units": 100}
+]
+```
+
+One bond is treated as 100 PLN. The app retrieves the issue's first-year rate from the official
+[obligacjeskarbowe.pl](https://www.obligacjeskarbowe.pl/) offer page and annual
+CPI from the official GUS BDL API, then caches both locally in `data/`.
+Subsequent EDO years are calculated as CPI plus the issue margin and are
+capitalised annually. The transaction date is the purchase date; no annual
+rates need to be entered manually.
+
 ## Dashboard
 
 Top to bottom:

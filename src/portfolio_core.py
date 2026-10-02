@@ -41,6 +41,8 @@ import logging
 from datetime import date, timedelta
 from typing import Callable
 
+import storage
+
 log = logging.getLogger(__name__)
 
 from storage import (
@@ -51,6 +53,15 @@ from storage import (
 )
 from ticker_data import get_price, get_fx_rate, get_ticker_currency, FX_YAHOO
 from ledger_core import get_all_transactions
+from bonds import (
+    bond_value,
+    bond_value_from_holding,
+    bond_purchase_date,
+    is_retail_bond,
+    load_bond_definition,
+    load_inflation,
+    refresh_monthly_cpi_from_gus,
+)
 
 FX_TICKERS = set(FX_YAHOO.keys())
 
@@ -91,6 +102,33 @@ def _ticker_currency(ticker: str) -> str:
     return "USD"
 
 
+def _apply_bond_transaction(
+    lots: dict[str, list[tuple[date, float]]],
+    ticker: str,
+    amount: float,
+    transaction_date: date,
+) -> None:
+    if amount > 0:
+        lots.setdefault(ticker, []).append((transaction_date, amount))
+        return
+    if amount >= 0:
+        return
+
+    remaining_to_sell = -amount
+    remaining_lots = []
+    for purchase_date, units in lots.get(ticker, []):
+        sold_units = min(units, remaining_to_sell)
+        units -= sold_units
+        remaining_to_sell -= sold_units
+        if units > 1e-9:
+            remaining_lots.append((purchase_date, units))
+
+    if remaining_lots:
+        lots[ticker] = remaining_lots
+    else:
+        lots.pop(ticker, None)
+
+
 # -- Main build function -------------------------------------------------------
 
 def build_portfolio(
@@ -109,12 +147,23 @@ def build_portfolio(
     """
     base_currency = base_currency.upper()
     cache = _PriceCache()
+    bond_holdings = storage.load_bond_holdings()
+    bond_schedule = []
+    for holding in bond_holdings:
+        try:
+            definition = load_bond_definition(holding["ticker"])
+            purchase_date = bond_purchase_date(holding, definition)
+            bond_schedule.append((purchase_date, holding))
+        except (KeyError, TypeError, ValueError):
+            continue
 
     # -- Resume from cache -----------------------------------------------------
     existing: list[dict] = []
     if use_cache:
         existing = [s for s in load_portfolio()
                     if s.get("base_currency") == base_currency]
+    if existing and date.fromisoformat(existing[0]["date"]) > start_date:
+        existing = []
 
     if existing:
         last_cached        = existing[-1]["date"]
@@ -127,11 +176,39 @@ def build_portfolio(
     else:
         resume_from        = start_date
         balance            = {}
-        cumulative_contrib = 0.0
+        cumulative_contrib = sum(
+            float(holding["units"]) * 100.0
+            for purchase_date, holding in bond_schedule
+            if purchase_date < resume_from
+        )
 
     # -- Load transactions once ------------------------------------------------
     today_str = date.today().isoformat()
     all_tx     = get_all_transactions()
+    bond_purchase_years = []
+    bond_definitions = {}
+    bond_lots: dict[str, list[tuple[date, float]]] = {}
+    for record in all_tx:
+        transaction_date = date.fromisoformat(record["date"])
+        for entry in record["entries"]:
+            ticker = entry["ticker"].upper()
+            if not is_retail_bond(ticker):
+                continue
+            amount = float(entry["amount"])
+            if ticker not in bond_definitions:
+                bond_definitions[ticker] = load_bond_definition(ticker)
+            if amount > 0:
+                bond_purchase_years.append(transaction_date.year)
+            if existing and transaction_date < resume_from:
+                _apply_bond_transaction(bond_lots, ticker, amount, transaction_date)
+    if bond_purchase_years or bond_schedule:
+        first_bond_year = min(
+            [purchase.year for purchase, _ in bond_schedule]
+            + bond_purchase_years
+        )
+        inflation = refresh_monthly_cpi_from_gus(first_bond_year, end_date.year)
+    else:
+        inflation = load_inflation()
     resume_str = resume_from.isoformat()
     pending_tx = [r for r in all_tx if r["date"] >= resume_str and r["date"] <= today_str]
     tx_idx     = 0
@@ -165,6 +242,10 @@ def build_portfolio(
                 t   = e["ticker"].upper()
                 amt = float(e["amount"])
                 balance[t] = balance.get(t, 0.0) + amt
+                if is_retail_bond(t):
+                    _apply_bond_transaction(
+                        bond_lots, t, amt, date.fromisoformat(rec["date"])
+                    )
 
                 if e.get("account_operation", False):
                     fx = cache.get_fx(t, base_currency, rec["date"], tx_year)
@@ -172,10 +253,17 @@ def build_portfolio(
 
             tx_idx += 1
 
+        if not existing:
+            cumulative_contrib += sum(
+                float(holding["units"]) * 100.0
+                for purchase_date, holding in bond_schedule
+                if purchase_date == day
+            )
+
         # Remove dust positions
         balance = {k: v for k, v in balance.items() if abs(v) > 1e-9}
 
-        if not balance:
+        if not balance and not bond_holdings:
             new_snapshots.append({
                 "date": day_str, "assets": [],
                 "total_value": 0.0, "invested": 0.0,
@@ -204,6 +292,22 @@ def build_portfolio(
                     "value_base":   value_base,
                 })
                 total_value += value_base
+            elif is_retail_bond(t) and bond_definitions.get(t):
+                value_native = sum(
+                    bond_value(bond_definitions[t], units, purchase_date, day, inflation)
+                    for purchase_date, units in bond_lots.get(t, [])
+                )
+                rate = cache.get_fx("PLN", base_currency, day_str, year)
+                value_base = round(value_native * rate, 2)
+                assets.append({
+                    "ticker": t,
+                    "amount": round(amount, 8),
+                    "price": round(value_native / amount, 6) if amount else 0.0,
+                    "currency": "PLN",
+                    "value_native": value_native,
+                    "value_base": value_base,
+                })
+                total_value += value_base
             else:
                 price = cache.get(t, day_str, year)
                 if price is None:
@@ -225,6 +329,41 @@ def build_portfolio(
                     "value_base":   value_base,
                 })
                 total_value += value_base
+
+        # Holdings entered from a bank statement do not need a synthetic
+        # transaction: their quantity and maturity date are enough to value them.
+        displayed_tickers = {asset["ticker"] for asset in assets}
+        bond_asset_totals: dict[str, dict[str, float]] = {}
+        for holding in bond_holdings:
+            ticker = str(holding.get("ticker", "")).upper()
+            if ticker in displayed_tickers or not is_retail_bond(ticker):
+                continue
+            try:
+                definition = load_bond_definition(ticker)
+                if day < bond_purchase_date(holding, definition):
+                    continue
+                value_native = bond_value_from_holding(holding, day, inflation)
+                units = float(holding["units"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            total = bond_asset_totals.setdefault(ticker, {"units": 0.0, "value_native": 0.0})
+            total["units"] += units
+            total["value_native"] += value_native
+
+        rate = cache.get_fx("PLN", base_currency, day_str, year)
+        for ticker, total in bond_asset_totals.items():
+            units = total["units"]
+            value_native = round(total["value_native"], 2)
+            value_base = round(value_native * rate, 2)
+            assets.append({
+                "ticker": ticker,
+                "amount": round(units, 8),
+                "price": round(value_native / units, 6) if units else 0.0,
+                "currency": "PLN",
+                "value_native": value_native,
+                "value_base": value_base,
+            })
+            total_value += value_base
 
         new_snapshots.append({
             "date":          day_str,

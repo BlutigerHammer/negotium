@@ -9,6 +9,7 @@ import streamlit as st
 
 import config as cfg_module
 from bossa_import import import_bossa
+from bonds import is_retail_bond
 from currencies import SUPPORTED_CURRENCIES
 from ledger_core import remap_tickers
 from manual_import import import_manual
@@ -265,6 +266,53 @@ def render_sidebar(cfg, storage, T, today, data_start_date, detect_currency):
                         st.rerun()
                     except ValueError as e:
                         st.error(str(e))
+
+        with st.expander("🇵🇱 Polish retail bonds"):
+            st.caption("Enter the issue ticker, maturity date and number of bonds. Rates are fetched automatically.")
+            existing_bond_holdings = storage.load_bond_holdings()
+            if existing_bond_holdings:
+                saved_totals = ", ".join(
+                    f"{holding['ticker']}: {float(holding['units']):g} units"
+                    for holding in existing_bond_holdings
+                )
+                st.caption(f"Saved totals: {saved_totals}. New units are added to the existing series.")
+            with st.form("bond_holding_form", clear_on_submit=True):
+                bond_ticker = st.text_input(
+                    "Ticker",
+                    placeholder="EDO1233 or TOS0827",
+                ).strip().upper().replace("/", "")
+                bond_maturity = st.date_input(
+                    "Maturity date",
+                    value=today,
+                    min_value=date(2000, 1, 1),
+                    max_value=date(2100, 12, 31),
+                )
+                bond_units = st.number_input(
+                    "Units to add",
+                    min_value=0.0001,
+                    value=1.0,
+                    step=1.0,
+                    format="%.4f",
+                )
+                bond_submitted = st.form_submit_button("Save bond holding", width="stretch")
+
+            if bond_submitted:
+                if not is_retail_bond(bond_ticker):
+                    st.error("Supported tickers: EDO1233 or TOS0827.")
+                else:
+                    try:
+                        total_units = storage.add_bond_units(
+                            bond_ticker, bond_maturity.isoformat(), float(bond_units)
+                        )
+                    except ValueError as error:
+                        st.error(str(error))
+                    else:
+                        storage.invalidate_portfolio_from(data_start_date.isoformat())
+                        for k in list(st.session_state.keys()):
+                            if k.startswith("snapshots_") or k.startswith("benchmarks_"):
+                                st.session_state.pop(k)
+                        st.success(f"Added {bond_units:g}; {bond_ticker} total is now {total_units:g} units.")
+                        st.rerun()
 
         with st.expander("➕ Add transaction"):
             # Dynamic row count managed via session state

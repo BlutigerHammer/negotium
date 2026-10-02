@@ -23,24 +23,33 @@ Created by **Kacper Kaperek**. If you like this, buy me a coffee:
 
 ## Quick start
 
+**macOS / Linux:**
 ```bash
 ./start.sh
 ```
 
-The launcher finds Python 3.10+, installs missing dependencies, runs the test
-suite, and opens the app at http://localhost:8501.
+**Windows:** double-click `start.bat`, or run it from Command Prompt or PowerShell:
+
+```powershell
+.\start.bat
+```
+
+Both launchers find Python 3.10+, create a project-local `.venv`, install
+missing dependencies, and start the app at http://localhost:8501. Tests are
+skipped by default; use `--run-tests` to run them before launch.
 
 | Option | Effect |
 |---|---|
-| `--skip-tests` | skip the test suite on launch |
+| `--run-tests` | run the test suite, then launch |
 | `--tests-only` | run tests and exit |
+| `--skip-tests` | skip tests on launch (default) |
 | `--port N` | use port N (default 8501) |
 | `--reset` | wipe all data and start fresh |
 | `-h`, `--help` | show help |
 
 ## Requirements
 
-- **Python 3.10+** (macOS / Linux; the launcher prefers 3.14 and falls back to 3.13 / 3.12 / 3.11)
+- **Python 3.10+** (the launcher prefers 3.14 and falls back to 3.13 / 3.12 / 3.11 / 3.10)
 - Internet access to **Yahoo Finance** for prices, FX rates, dividends and company metadata — the only outbound traffic; the UI itself is served on localhost
 - Dependencies installed automatically on first run: `yfinance`, `streamlit`, `plotly`, `pandas`, `orjson`, `openpyxl`, `python-calamine`
 
@@ -112,6 +121,7 @@ suffix, so after a swap the conversion is automatic (e.g. `.ST` → SEK,
 ```
 negotium/
 ├── start.sh                  ← launcher (finds python, installs deps, runs tests)
+├── start.bat                 ← Windows launcher (same options as start.sh)
 ├── data/
 │   ├── config.json           ← global config (all projects share it)
 │   ├── projects.json         ← project registry (created_at, last_refresh, watchlist)

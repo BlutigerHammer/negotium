@@ -4,6 +4,7 @@
 #   Usage:  ./start.sh                 start UI (skip tests)
 #          ./start.sh --run-tests      run tests then start UI
 #          ./start.sh --tests-only     run tests only
+#          ./start.sh --skip-tests     skip tests (default)
 #          ./start.sh --port 8502     custom port (default 8501)
 #          ./start.sh --reset         wipe all data and start fresh
 # ─────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --run-tests)   RUN_TESTS=true   ; shift ;;
     --tests-only)  TESTS_ONLY=true  ; shift ;;
+    --skip-tests)  RUN_TESTS=false  ; shift ;;
     --reset)       RESET=true       ; shift ;;
     --port)        PORT="$2"        ; shift 2 ;;
     -h|--help)     grep '^#  ' "$0" | sed 's/#  //'; exit 0 ;;

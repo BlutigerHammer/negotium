@@ -10,6 +10,7 @@ import colorsys
 
 import plotly.graph_objects as go
 import streamlit as st
+from bonds import retail_bond_metadata
 from ui.colors import ACCENT
 
 
@@ -48,7 +49,7 @@ def render_allocation_breakdown(latest_assets, base_ccy: str, today, T: dict, ge
     for a in latest_assets:
         ticker = a["ticker"]
         val = a["value_base"]
-        meta = get_ticker_meta(ticker)
+        meta = retail_bond_metadata(ticker) or get_ticker_meta(ticker)
         sector = meta.get("sector") or "Unknown"
         country = meta.get("country") or "Unknown"
         aclass = meta.get("asset_class") or "Unknown"

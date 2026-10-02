@@ -109,6 +109,36 @@ def test_storage_loads_prices_range(tmp: Path):
     assert "2023-01-03" in prices
 
 
+def test_bond_holdings_roundtrip(tmp: Path):
+    """Bond holdings use the agreed ticker, maturity date and units schema."""
+    import storage
+
+    holdings = [{"ticker": "TOS0827", "maturity_date": "2027-08-30", "units": 50}]
+    storage.save_bond_holdings(holdings)
+    assert storage.load_bond_holdings() == holdings
+
+
+def test_add_bond_units_merges_series_and_rejects_maturity_change(tmp: Path):
+    import pytest
+    import storage
+
+    storage.save_bond_holdings([
+        {"ticker": "TOS0827", "maturity_date": "2027-08-30", "units": 5},
+        {"ticker": "tos0827", "maturity_date": "2027-08-30", "units": 2},
+    ])
+
+    assert storage.add_bond_units("TOS0827", "2027-08-30", 3) == 10
+    assert storage.load_bond_holdings() == [{
+        "ticker": "TOS0827",
+        "maturity_date": "2027-08-30",
+        "units": 10.0,
+    }]
+
+    with pytest.raises(ValueError, match="different maturity date"):
+        storage.add_bond_units("TOS0827", "2028-08-30", 1)
+    assert storage.load_bond_holdings()[0]["units"] == 10.0
+
+
 def test_create_and_list_projects(tmp: Path):
     """create_project + list_projects returns sorted project names."""
     import storage

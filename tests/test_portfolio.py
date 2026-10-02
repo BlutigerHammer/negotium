@@ -89,6 +89,124 @@ def test_portfolio_build_single_asset(tmp: Path):
         f"AAPL value_base: expected ~{expected_aapl_value:.2f}, got {aapl_asset['value_base']}"
 
 
+def test_retail_bond_purchases_are_valued_as_separate_tranches(tmp: Path):
+    import bonds, ledger_core, portfolio_core
+
+    definition = bonds.BondDefinition(
+        "EDO0127", date(2017, 1, 1), 10, 0.05, 0.10
+    )
+    ledger_core.add_transaction("2025-01-01", [{"ticker": "EDO0127", "amount": 1.0}])
+    ledger_core.add_transaction("2026-01-01", [{"ticker": "EDO0127", "amount": 1.0}])
+
+    with patch.object(portfolio_core, "load_bond_definition", return_value=definition), \
+            patch.object(portfolio_core, "refresh_monthly_cpi_from_gus", return_value={2025: 0.0}):
+        snapshots = portfolio_core.build_portfolio(
+            start_date=date(2025, 1, 1),
+            end_date=date(2026, 7, 1),
+            base_currency="PLN",
+            precision="D",
+            use_cache=False,
+        )
+
+    asset = next(a for a in snapshots[-1]["assets"] if a["ticker"] == "EDO0127")
+    expected = bonds.bond_value(
+        definition, 1.0, date(2025, 1, 1), date(2026, 7, 1), {2025: 0.0}
+    ) + bonds.bond_value(
+        definition, 1.0, date(2026, 1, 1), date(2026, 7, 1), {2025: 0.0}
+    )
+    assert asset["value_native"] == expected
+
+
+def test_invalid_manual_bond_holding_does_not_break_portfolio_build(tmp: Path):
+    import portfolio_core, storage
+
+    storage.save_bond_holdings([{
+        "ticker": "AAPL",
+        "maturity_date": "2034-01-01",
+        "units": 1,
+    }])
+
+    snapshots = portfolio_core.build_portfolio(
+        start_date=date(2024, 1, 1),
+        end_date=date(2024, 1, 1),
+        base_currency="PLN",
+        precision="D",
+        use_cache=False,
+    )
+
+    assert snapshots[0]["assets"] == []
+
+
+def test_portfolio_cache_backfills_when_bond_purchase_predates_cached_start(tmp: Path):
+    import bonds, ledger_core, portfolio_core, storage
+
+    fx.inject_fake_prices(tmp)
+    definition = bonds.BondDefinition("EDO1233", date(2023, 12, 1), 10, 0.05, 0.015)
+    storage.save_bond_holdings([{
+        "ticker": "EDO1233",
+        "maturity_date": "2033-12-13",
+        "units": 100,
+    }])
+    ledger_core.add_transaction("2024-10-21", [{
+        "ticker": "PLN", "amount": 1000.0, "account_operation": True,
+    }])
+
+    with patch.object(portfolio_core, "load_bond_definition", return_value=definition), \
+            patch.object(portfolio_core, "refresh_monthly_cpi_from_gus", return_value={2023: 0.0}):
+        portfolio_core.build_portfolio(
+            start_date=date(2024, 10, 21),
+            end_date=date(2024, 10, 21),
+            base_currency="PLN",
+            precision="D",
+            use_cache=True,
+        )
+        rebuilt = portfolio_core.build_portfolio(
+            start_date=date(2023, 12, 13),
+            end_date=date(2024, 10, 21),
+            base_currency="PLN",
+            precision="D",
+            use_cache=True,
+        )
+
+    assert rebuilt[0]["date"] == "2023-12-13"
+    first_bond = next(asset for asset in rebuilt[0]["assets"] if asset["ticker"] == "EDO1233")
+    assert first_bond["value_native"] == 10000.0
+
+
+def test_benchmark_cache_requires_matching_dates_and_investment_flows():
+    from benchmark_cache import benchmark_cache_matches, investment_flow_signature
+
+    snapshots = [
+        {"date": "2024-10-21", "invested": 36000.0},
+        {"date": "2024-10-22", "invested": 36000.0},
+    ]
+    signature = investment_flow_signature(snapshots)
+    stale_cache = [
+        {"date": "2024-10-21", "VWCE.DE": 1000.0},
+        {"date": "2024-10-22", "VWCE.DE": 1001.0},
+    ]
+
+    assert not benchmark_cache_matches(stale_cache, snapshots, ["VWCE.DE"], signature)
+
+    valid_cache = [
+        {**entry, "_flow_signature": signature} for entry in stale_cache
+    ]
+    assert benchmark_cache_matches(valid_cache, snapshots, ["VWCE.DE"], signature)
+
+    old_snapshots = [
+        {"date": "2024-10-21", "invested": 1000.0},
+        {"date": "2024-10-22", "invested": 1000.0},
+    ]
+    old_flow_cache = [
+        {**entry, "_flow_signature": investment_flow_signature(old_snapshots)}
+        for entry in stale_cache
+    ]
+    assert not benchmark_cache_matches(old_flow_cache, snapshots, ["VWCE.DE"], signature)
+
+    wrong_dates = [{**valid_cache[0], "date": "2024-10-20"}, valid_cache[1]]
+    assert not benchmark_cache_matches(wrong_dates, snapshots, ["VWCE.DE"], signature)
+
+
 def test_portfolio_build_cash_only(tmp: Path):
     """Portfolio with only PLN cash shows correct value without any FX conversion."""
     import ledger_core, portfolio_core

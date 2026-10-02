@@ -22,6 +22,7 @@ except ImportError:
     import json
     _loads = json.loads
     _dumps = lambda obj: json.dumps(obj, ensure_ascii=False)
+import os
 from pathlib import Path
 from datetime import date, datetime
 from typing import Iterator
@@ -98,6 +99,52 @@ def balance_path() -> Path:
 def imports_dir() -> Path:
     """Path of the current project's imports directory."""
     return _project_dir() / "imports"
+
+
+def bond_holdings_path() -> Path:
+    """Path of the current project's retail bond holdings."""
+    return _project_dir() / "bond_holdings.json"
+
+
+def load_bond_holdings() -> list[dict]:
+    """Return manually entered retail bond holdings for the current project."""
+    path = bond_holdings_path()
+    if not path.exists():
+        return []
+    data = _loads(path.read_bytes())
+    return data if isinstance(data, list) else []
+
+
+def save_bond_holdings(holdings: list[dict]) -> None:
+    """Persist retail bond holdings for the current project."""
+    _write_bytes_atomic(bond_holdings_path(), _dumps(holdings).encode())
+
+
+def add_bond_units(ticker: str, maturity_date: str, units: float) -> float:
+    """Add units to a series without replacing its existing project holding."""
+    ticker = ticker.upper().strip()
+    holdings = load_bond_holdings()
+    matching = [
+        holding for holding in holdings
+        if str(holding.get("ticker", "")).upper() == ticker
+    ]
+    if any(holding.get("maturity_date") != maturity_date for holding in matching):
+        raise ValueError(f"{ticker} already has a different maturity date")
+
+    total_units = round(
+        sum(float(holding["units"]) for holding in matching) + float(units), 8
+    )
+    holdings = [
+        holding for holding in holdings
+        if str(holding.get("ticker", "")).upper() != ticker
+    ]
+    holdings.append({
+        "ticker": ticker,
+        "maturity_date": maturity_date,
+        "units": total_units,
+    })
+    save_bond_holdings(holdings)
+    return total_units
 
 
 # ── Project registry ──────────────────────────────────────────────────────────
@@ -396,7 +443,7 @@ def invalidate_portfolio_from(from_date: str) -> None:
             rec = _loads(stripped)
             if str(rec.get("date", "")) < from_date:
                 dst.write(line)
-    tmp.rename(portfolio_path())
+    os.replace(tmp, portfolio_path())
 
 
 # ── Benchmark cache ──────────────────────────────────────────────────────────

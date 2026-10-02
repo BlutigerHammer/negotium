@@ -6,6 +6,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+from benchmark_cache import benchmark_cache_matches, investment_flow_signature
 import storage
 from currencies import CURRENCY_SYMBOLS
 from portfolio_core import (
@@ -79,7 +80,8 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
     # ── Main ──────────────────────────────────────────────────────────────────────
 
     all_tx = get_all_transactions()
-    if not all_tx:
+    bond_holdings = storage.load_bond_holdings()
+    if not all_tx and not bond_holdings:
         st.markdown(
             render_empty_state(
                 "No transactions yet",
@@ -157,6 +159,9 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
     # ── Build portfolio ───────────────────────────────────────────────────────────
 
     cache_key = f"snapshots_{base_ccy}_{precision}"
+    cached_snapshots = st.session_state.get(cache_key)
+    if cached_snapshots and date.fromisoformat(cached_snapshots[0]["date"]) > data_start_date:
+        st.session_state.pop(cache_key, None)
 
     if cache_key not in st.session_state:
         bar = st.progress(0, text="Building portfolio…")
@@ -224,11 +229,16 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
 
     # ── Compute & cache benchmarks ────────────────────────────────────────────────
 
-    bench_cache_key = f"benchmarks_{base_ccy}_{all_snapshots[0]['date']}_{all_snapshots[-1]['date']}"
+    flow_signature = investment_flow_signature(all_snapshots)
+    bench_cache_key = (
+        f"benchmarks_{base_ccy}_{all_snapshots[0]['date']}_"
+        f"{all_snapshots[-1]['date']}_{flow_signature}"
+    )
     if bench_cache_key not in st.session_state:
         cached = storage.load_benchmarks(base_ccy) if not force_refresh else None
-        if (cached and len(cached) == len(all_snapshots)
-                and all(k in cached[0] for k in BENCHMARKS.values())):
+        if benchmark_cache_matches(
+            cached, all_snapshots, list(BENCHMARKS.values()), flow_signature
+        ):
             st.session_state[bench_cache_key] = cached
         else:
             bench_date_start = date.fromisoformat(all_snapshots[0]["date"])
@@ -298,6 +308,8 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
                 for i, v in enumerate(b_vals):
                     bench_result[i][b_ticker] = v
 
+            if bench_result:
+                bench_result[0]["_flow_signature"] = flow_signature
             storage.save_benchmarks(base_ccy, bench_result)
             st.session_state[bench_cache_key] = bench_result
 
@@ -369,7 +381,9 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
         options=list(BENCHMARKS.keys()),
         key="bench_select",
         placeholder="Choose options",
-        on_change=lambda: st.session_state.update(bench_persist=list(st.session_state.bench_select)),
+        on_change=lambda: st.session_state.update(
+            bench_persist=list(st.session_state.get("bench_select", []))
+        ),
     )
 
     def _show_trade_dialog(ticker: str, name: str, ccy: str):

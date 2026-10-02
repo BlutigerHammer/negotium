@@ -28,6 +28,73 @@ def test_first_transaction_date(tmp: Path):
     ledger_core.get_all_transactions._cache.clear()
 
 
+def test_first_portfolio_date_includes_inferred_manual_bond_purchase(tmp: Path):
+    import bonds, ledger_core, storage
+
+    storage.create_project("bond_start")
+    ledger_core.add_transaction("2024-10-21", [{
+        "ticker": "PLN", "amount": 1000.0, "account_operation": True,
+    }])
+    storage.save_bond_holdings([{
+        "ticker": "EDO1233",
+        "maturity_date": "2033-12-13",
+        "units": 100,
+    }])
+    definition = bonds.BondDefinition("EDO1233", date(2023, 12, 1), 10, 0.05, 0.015)
+
+    with patch("bonds.load_bond_definition", return_value=definition):
+        assert ledger_core.first_portfolio_date() == date(2023, 12, 13)
+
+
+def test_transaction_cache_is_scoped_to_project_with_identical_mtimes(tmp: Path):
+    import os
+    import ledger_core, storage
+
+    storage.create_project("portfolio_a")
+    path_a = storage.transactions_path()
+    storage.write_jsonl(path_a, [{
+        "date": "2025-01-01",
+        "entries": [{"ticker": "NVDA", "amount": 2.0}],
+    }])
+    shared_mtime_ns = path_a.stat().st_mtime_ns
+
+    storage.create_project("portfolio_b")
+    path_b = storage.transactions_path()
+    storage.write_jsonl(path_b, [{
+        "date": "2025-01-01",
+        "entries": [{"ticker": "NVDA", "amount": 7.0}],
+    }])
+    os.utime(path_b, ns=(shared_mtime_ns, shared_mtime_ns))
+
+    ledger_core.get_all_transactions._cache.clear()
+    storage.set_current_project("portfolio_a")
+    transactions_a = ledger_core.get_all_transactions()
+    storage.set_current_project("portfolio_b")
+    transactions_b = ledger_core.get_all_transactions()
+
+    assert transactions_a[0]["entries"][0]["amount"] == 2.0
+    assert transactions_b[0]["entries"][0]["amount"] == 7.0
+
+
+def test_manual_bond_flow_skips_units_already_in_ledger(tmp: Path):
+    import bonds, ledger_core, storage
+
+    definition = bonds.BondDefinition("EDO0127", date(2017, 1, 1), 10, 0.05, 0.015)
+    storage.save_bond_holdings([
+        {"ticker": "EDO0127", "maturity_date": "2037-01-01", "units": 1},
+        {"ticker": "EDO0227", "maturity_date": "2037-02-01", "units": 2},
+    ])
+    records = [{
+        "date": "2026-12-31",
+        "entries": [{"ticker": "EDO0127", "amount": 1}],
+    }]
+
+    with patch("bonds.load_bond_definition", return_value=definition):
+        flows = ledger_core._manual_bond_flows(records)
+
+    assert flows == [("2027-02-01", 200.0)]
+
+
 def test_add_transaction_simple(tmp: Path):
     """Adding a transaction creates the ledger and updates balance."""
     import ledger_core, storage

@@ -58,6 +58,6 @@ _fade_ts = st.session_state.pop("theme_fade", None)
 if _fade_ts is not None and (time.time() - _fade_ts) < 3:
     st.markdown(build_theme_veil(T), unsafe_allow_html=True)
 
-data_start_date = ledger_core.first_transaction_date() or today
+data_start_date = ledger_core.first_portfolio_date() or today
 base_ccy = render_sidebar(cfg, storage, T, today, data_start_date, detect_currency)
 render_dashboard(cfg, storage, T, today, data_start_date, base_ccy)
