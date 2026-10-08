@@ -56,6 +56,39 @@ def test_holdings_weights_currency_invariant(tmp: Path):
             f"weight of {ticker} differs by currency: {w_pln[ticker]:.4f} vs {w_usd[ticker]:.4f}"
 
 
+def test_benchmark_cache_requires_matching_contribution_flow():
+    from benchmark_cache import benchmark_cache_matches, investment_flow_signature
+
+    snapshots = [
+        {"date": "2024-10-21", "invested": 36000.0},
+        {"date": "2024-10-22", "invested": 36000.0},
+    ]
+    stale_cache = [
+        {"date": "2024-10-21", "VWCE.DE": 1000.0},
+        {"date": "2024-10-22", "VWCE.DE": 1001.0},
+    ]
+    signature = investment_flow_signature(snapshots)
+
+    assert not benchmark_cache_matches(stale_cache, snapshots, ["VWCE.DE"], signature)
+
+    valid_cache = [
+        {**row, "_flow_signature": signature} for row in stale_cache
+    ]
+    assert benchmark_cache_matches(valid_cache, snapshots, ["VWCE.DE"], signature)
+
+    wrong_flows = [
+        {"date": "2024-10-21", "invested": 1000.0},
+        {"date": "2024-10-22", "invested": 1000.0},
+    ]
+    old_signature_cache = [
+        {**row, "_flow_signature": investment_flow_signature(wrong_flows)}
+        for row in stale_cache
+    ]
+    assert not benchmark_cache_matches(
+        old_signature_cache, snapshots, ["VWCE.DE"], signature
+    )
+
+
 def test_portfolio_build_single_asset(tmp: Path):
     """Portfolio build produces correct values for a single USD stock in PLN base."""
     import ledger_core, portfolio_core

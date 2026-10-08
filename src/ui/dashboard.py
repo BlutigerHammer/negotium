@@ -7,6 +7,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from benchmark_cache import benchmark_cache_matches, investment_flow_signature
 import storage
 from currencies import CURRENCY_SYMBOLS
 from portfolio_core import (
@@ -249,11 +250,16 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
 
     # ── Compute & cache benchmarks ────────────────────────────────────────────────
 
-    bench_cache_key = f"benchmarks_{base_ccy}_{all_snapshots[0]['date']}_{all_snapshots[-1]['date']}"
+    flow_signature = investment_flow_signature(all_snapshots)
+    bench_cache_key = (
+        f"benchmarks_{base_ccy}_{all_snapshots[0]['date']}_"
+        f"{all_snapshots[-1]['date']}_{flow_signature}"
+    )
     if bench_cache_key not in st.session_state:
         cached = storage.load_benchmarks(base_ccy) if not force_refresh else None
-        if (cached and len(cached) == len(all_snapshots)
-                and all(k in cached[0] for k in BENCHMARKS.values())):
+        if benchmark_cache_matches(
+            cached, all_snapshots, list(BENCHMARKS.values()), flow_signature
+        ):
             st.session_state[bench_cache_key] = cached
         else:
             bench_date_start = date.fromisoformat(all_snapshots[0]["date"])
@@ -323,6 +329,8 @@ def render_dashboard(cfg, storage, T, today, data_start_date, base_ccy: str | No
                 for i, v in enumerate(b_vals):
                     bench_result[i][b_ticker] = v
 
+            if bench_result:
+                bench_result[0]["_flow_signature"] = flow_signature
             storage.save_benchmarks(base_ccy, bench_result)
             st.session_state[bench_cache_key] = bench_result
 
