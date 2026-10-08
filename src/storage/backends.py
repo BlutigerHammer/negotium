@@ -103,7 +103,7 @@ class LocalBackend(StorageBackend):
         if full.is_file():
             return [prefix]
         return [
-            str(p.relative_to(self.root))
+            p.relative_to(self.root).as_posix()
             for p in full.rglob("*")
             if p.is_file()
         ]

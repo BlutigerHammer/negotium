@@ -7,6 +7,16 @@ from pathlib import Path
 import json
 
 
+def test_local_backend_list_files_returns_posix_keys(tmp: Path):
+    from storage.backends import LocalBackend
+
+    backend = LocalBackend(tmp)
+    key = "users/local_user/test_proj/imports/custom/manual.json"
+    backend.write_bytes(key, b"{}")
+
+    assert backend.list_files("users/local_user/test_proj/imports/") == [key]
+
+
 def test_storage_jsonl_roundtrip(tmp: Path):
     """JSONL write → read preserves all records."""
     import storage
